@@ -1,0 +1,142 @@
+import os
+import glob
+import trimesh
+import numpy as np
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+from matplotlib import pyplot as plt
+
+tf.random.set_seed(1234)
+
+file_List = tf.keras.utils.get_file(
+    "modelnet.zip",
+    "http://3dvision.princeton.edu/projects/2014/3DShapeNets/ModelNet10.zip",
+    extract=True,
+)
+file_List = os.path.join(os.path.dirname(file_List), "ModelNet10")
+
+def data(point=1024):
+
+    train_data = []
+    train_labels = []
+    test_data = []
+    test_labels = []
+    class_map = {}
+    Dir = glob.glob(os.path.join(file_List, "[!README]*"))
+
+    for i, folder in enumerate(Dir):
+        print("category: {}".format(os.path.basename(folder)))
+       
+        class_map[i] = folder.split("/")[-1]
+        # gather all files
+        train_list = glob.glob(os.path.join(folder.split('/n')[0], "train/*"))
+        test_list = glob.glob(os.path.join(folder.split('/n')[0], "test/*"))
+
+        for file in train_list:
+            train_data.append(trimesh.load(file).sample(point))
+            train_labels.append(i)
+
+        for file in test_list:
+            test_data.append(trimesh.load(file).sample(point))
+            test_labels.append(i)
+
+    return (
+        np.array(train_data),
+        np.array(test_data),
+        np.array(train_labels),
+        np.array(test_labels),
+        class_map,
+    )
+
+train_data, test_data, train_labels, test_labels, CLASS_MAP = data(
+    1024
+)
+
+def jet(Data, label):
+    
+    Data += tf.random.uniform(Data.shape, -0.005, 0.005, dtype=tf.float64)
+
+    Data = tf.random.shuffle(Data)
+    return Data, label
+
+
+train_list = tf.data.Dataset.from_tensor_slices((train_data, train_labels))
+test_list = tf.data.Dataset.from_tensor_slices((test_data, test_labels))
+
+train_list = train_list.shuffle(len(train_data)).map(augment).batch(BATCH_SIZE)
+test_list = test_list.shuffle(len(test_data)).batch(BATCH_SIZE)
+
+NUM_POINTS = 1024
+NUM_CLASSES = 10
+BATCH_SIZE = 32
+
+input_tensor = keras.Input(shape=(NUM_POINTS, 3))
+
+x = layers.Conv1D(8, 3, padding='valid', activation='relu', strides=1)(input_tensor)
+x = layers.MaxPooling1D(pool_size=3)(x)
+x = layers.Dropout(0.5)(x)
+x = layers.Conv1D(16, 3, padding='valid', activation='relu', strides=1)(x)
+x = layers.MaxPooling1D(pool_size=3)(x)
+x = layers.Dropout(0.5)(x)
+x = layers.Conv1D(32, 3, padding='valid', activation='relu', strides=1)(x)
+x = layers.MaxPooling1D(pool_size=3)(x)
+x = layers.Dropout(0.5)(x)
+x = layers.Conv1D(64, 3, padding='valid', activation='relu', strides=1)(x)
+x = layers.MaxPooling1D(pool_size=3)(x)
+x = layers.Dropout(0.5)(x)
+x = layers.Conv1D(128, 3, padding='valid', activation='relu', strides=1)(x)
+x = layers.MaxPooling1D(pool_size=3)(x)
+x = layers.Flatten()(x)
+x = layers.Dense(256, activation='relu')(x)
+x = layers.Dropout(0.5)(x)
+x = layers.Dense(128, activation='relu')(x)
+x = layers.Dropout(0.5)(x)
+output_tensor = layers.Dense(NUM_CLASSES, activation="softmax")(x)
+
+    
+model = tf.keras.Model(input_tensor, output_tensor)
+model.summary()
+
+model.compile(
+    loss="sparse_categorical_crossentropy",
+    optimizer=keras.optimizers.Adam(learning_rate=0.001),
+    metrics=["sparse_categorical_accuracy"],
+)
+
+history= model.fit(train_list, epochs=10, validation_data=test_list)
+
+item = test_list
+
+data, labels = list(item)[0]
+data = data[:10, ...]
+labels = labels[:10, ...]
+
+pred = model.predict(data)
+pred = tf.math.argmax(pred, -1)
+
+data = data.numpy()
+fig = plt.figure(figsize=(40, 20))
+for i in range(9):
+    ax = fig.add_subplot(1, 10, i + 1, projection="3d")
+    ax.scatter(data[i, :, 0], data[i, :, 1], data[i, :, 2])
+    ax.set_title(
+        "pred: {:}, label: {:}".format(
+            CLASS_MAP[pred[i].numpy()], CLASS_MAP[labels[i].numpy()]
+        )
+    )
+    ax.set_axis_off()
+plt.show()
+
+
+score = model.evaluate(test_data, test_labels, verbose=0)
+print("Test accuracy:", score[1])
+
+# Accuracy Curves
+plt.figure(figsize=[6,6])
+plt.plot(history.history['sparse_categorical_accuracy'],'r',linewidth=2.0)
+plt.plot(history.history['val_sparse_categorical_accuracy'],'g',linewidth=2.0)
+plt.legend(['Training Accuracy', 'Validation Accuracy'],fontsize=10)
+plt.xlabel('Epochs ',fontsize=10)
+plt.ylabel('Accuracy',fontsize=10)
+plt.title('Accuracy Curves',fontsize=10)
